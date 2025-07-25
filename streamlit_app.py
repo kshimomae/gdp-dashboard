@@ -1,99 +1,223 @@
-# app.py
-import io
-import json
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import io
 
-# ---------------------------------------------
-# 1️⃣  Default trigger-phrase dictionaries
-# ---------------------------------------------
+# Set page config
+st.set_page_config(
+    page_title="Marketing Tactic Detector",
+    page_icon="🎯",
+    layout="wide"
+)
+
+# Default dictionaries
 DEFAULT_DICTIONARIES = {
-    "urgency_marketing": {
-        "limited", "limited time", "limited run", "limited edition",
-        "order now", "last chance", "hurry", "while supplies last",
-        "before they're gone", "selling out", "selling fast", "act now",
-        "don't wait", "today only", "expires soon", "final hours", "almost gone",
+    'urgency_marketing': {
+        'limited', 'limited time', 'limited run', 'limited edition', 'order now',
+        'last chance', 'hurry', 'while supplies last', 'before they\'re gone',
+        'selling out', 'selling fast', 'act now', 'don\'t wait', 'today only',
+        'expires soon', 'final hours', 'almost gone'
     },
-    "exclusive_marketing": {
-        "exclusive", "exclusively", "exclusive offer", "exclusive deal",
-        "members only", "vip", "special access", "invitation only",
-        "premium", "privileged", "limited access", "select customers",
-        "insider", "private sale", "early access",
-    },
+    'exclusive_marketing': {
+        'exclusive', 'exclusively', 'exclusive offer', 'exclusive deal',
+        'members only', 'vip', 'special access', 'invitation only',
+        'premium', 'privileged', 'limited access', 'select customers',
+        'insider', 'private sale', 'early access'
+    }
 }
 
-# Helper to classify a single text value
-def classify(text: str, dictionaries) -> list[str]:
-    if not isinstance(text, str):
-        return []
-    text = text.lower()
-    return [cat for cat, terms in dictionaries.items() if any(t in text for t in terms)]
+def detect_tactics(text, dictionaries):
+    """Detect marketing tactics in text and return results."""
+    if pd.isna(text) or not isinstance(text, str):
+        return {'urgency_marketing': 0, 'exclusive_marketing': 0, 'matched_terms': []}
+   
+    text_lower = text.lower()
+    results = {'urgency_marketing': 0, 'exclusive_marketing': 0, 'matched_terms': []}
+   
+    for tactic, terms in dictionaries.items():
+        for term in terms:
+            if term in text_lower:
+                results[tactic] = 1
+                results['matched_terms'].append(term)
+   
+    return results
 
-# ---------------------------------------------
-# Streamlit UI
-# ---------------------------------------------
-st.set_page_config(page_title="Tactic Classifier", page_icon="🔍", layout="wide")
-st.title("🔍 Marketing-Tactic Classifier")
+def load_csv_file(uploaded_file):
+    """Load CSV file with robust parsing."""
+    try:
+        # Try comma separator first
+        df = pd.read_csv(uploaded_file)
+        uploaded_file.seek(0)  # Reset file pointer
+       
+        # Check if semicolon-separated
+        if len(df.columns) == 1 and ';' in df.columns[0]:
+            df = pd.read_csv(uploaded_file, sep=';')
+           
+    except Exception as e:
+        st.error(f"Error reading CSV file: {e}")
+        return None
+   
+    return df
 
-# --- Upload section
-st.header("1. Upload a CSV file")
-uploaded_file = st.file_uploader("Choose a file", type=["csv"])
+def process_data(df, statement_column, dictionaries):
+    """Process dataframe and add marketing tactic detection."""
+    # Apply detection to Statement column
+    detections = df[statement_column].apply(lambda x: detect_tactics(x, dictionaries))
+   
+    # Extract results into separate columns
+    df_result = df.copy()
+    df_result['urgency_detected'] = [d['urgency_marketing'] for d in detections]
+    df_result['exclusive_detected'] = [d['exclusive_marketing'] for d in detections]
+    df_result['matched_terms'] = [', '.join(d['matched_terms']) for d in detections]
+   
+    return df_result
 
-if uploaded_file:
-    # Read the CSV into a dataframe
-    df = pd.read_csv(uploaded_file)
-    st.success(f"Loaded **{len(df):,}** rows.")
-    st.write("Preview:", df.head())
-
-    # Let the user pick the text column
-    with st.form("column_form"):
-        st.subheader("Which column contains the text to scan?")
-        text_col = st.selectbox(
-            "Text column",
-            options=df.columns.tolist(),
-            index=df.columns.get_loc("Statement") if "Statement" in df.columns else 0,
-        )
-        submitted_col = st.form_submit_button("Confirm column")
-    if not submitted_col:
-        st.stop()
-
-    # --- Dictionary editor
-    st.header("2. Edit or extend trigger-phrase dictionaries")
-    # We work on a copy, so default dict is never mutated permanently
-    dict_json = st.text_area(
-        "Edit the JSON below and press **Apply changes**.",
-        value=json.dumps(
-            {k: sorted(list(v)) for k, v in DEFAULT_DICTIONARIES.items()},
-            indent=2,
-            ensure_ascii=False,
-        ),
-        height=300,
+def main():
+    st.title("🎯 Marketing Tactic Detector")
+    st.markdown("Upload your dataset and detect urgency and exclusive marketing tactics in text data.")
+   
+    # Sidebar for dictionary editing
+    st.sidebar.header("📝 Edit Dictionaries")
+   
+    # Initialize session state for dictionaries
+    if 'dictionaries' not in st.session_state:
+        st.session_state.dictionaries = DEFAULT_DICTIONARIES.copy()
+   
+    # Dictionary editing interface
+    st.sidebar.subheader("Urgency Marketing Terms")
+    urgency_text = st.sidebar.text_area(
+        "Enter terms (one per line):",
+        value='\n'.join(st.session_state.dictionaries['urgency_marketing']),
+        height=150,
+        key="urgency_terms"
     )
-
-    if st.button("Apply changes"):
-        try:
-            user_dict = json.loads(dict_json)
-            # convert lists -> sets for faster lookup
-            dictionaries = {k: set(v) for k, v in user_dict.items()}
-            st.success("Dictionaries updated!")
-        except (ValueError, TypeError) as e:
-            st.error(f"❌ Invalid JSON: {e}")
-            st.stop()
-    else:
-        dictionaries = DEFAULT_DICTIONARIES
-
-    # --- Classification
-    st.header("3. Classify")
-    if st.button("Run classifier"):
-        df["tactics"] = df[text_col].apply(lambda x: classify(x, dictionaries))
-        st.dataframe(df.head(20))
-        # --- Download
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download full classified CSV",
-            data=csv_bytes,
-            file_name="classified_data.csv",
-            mime="text/csv",
+   
+    st.sidebar.subheader("Exclusive Marketing Terms")
+    exclusive_text = st.sidebar.text_area(
+        "Enter terms (one per line):",
+        value='\n'.join(st.session_state.dictionaries['exclusive_marketing']),
+        height=150,
+        key="exclusive_terms"
+    )
+   
+    # Update dictionaries when text changes
+    st.session_state.dictionaries['urgency_marketing'] = set(
+        term.strip().lower() for term in urgency_text.split('\n') if term.strip()
+    )
+    st.session_state.dictionaries['exclusive_marketing'] = set(
+        term.strip().lower() for term in exclusive_text.split('\n') if term.strip()
+    )
+   
+    # Reset to defaults button
+    if st.sidebar.button("Reset to Defaults"):
+        st.session_state.dictionaries = DEFAULT_DICTIONARIES.copy()
+        st.rerun()
+   
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+   
+    with col1:
+        st.header("📁 Upload Dataset")
+        uploaded_file = st.file_uploader(
+            "Choose a CSV file",
+            type="csv",
+            help="Upload a CSV file containing text data to analyze"
         )
-else:
-    st.info("👆 Upload a CSV file to get started.")
+       
+        if uploaded_file is not None:
+            # Load and display the data
+            df = load_csv_file(uploaded_file)
+           
+            if df is not None:
+                st.success(f"✅ File loaded successfully! Shape: {df.shape}")
+               
+                # Column selection
+                st.subheader("📋 Data Preview")
+                st.dataframe(df.head(), use_container_width=True)
+               
+                # Select statement column
+                statement_column = st.selectbox(
+                    "Select the column containing text to analyze:",
+                    options=df.columns.tolist(),
+                    index=df.columns.tolist().index('Statement') if 'Statement' in df.columns else 0
+                )
+               
+                # Process button
+                if st.button("🔍 Analyze Marketing Tactics", type="primary"):
+                    with st.spinner("Processing data..."):
+                        result_df = process_data(df, statement_column, st.session_state.dictionaries)
+                   
+                    # Display results
+                    st.subheader("📊 Analysis Results")
+                   
+                    # Summary metrics
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.metric("Total Statements", len(result_df))
+                    with col_b:
+                        st.metric("Urgency Tactics Detected", result_df['urgency_detected'].sum())
+                    with col_c:
+                        st.metric("Exclusive Tactics Detected", result_df['exclusive_detected'].sum())
+                   
+                    # Show detected tactics
+                    detected_df = result_df[
+                        (result_df['urgency_detected'] == 1) |
+                        (result_df['exclusive_detected'] == 1)
+                    ]
+                   
+                    if len(detected_df) > 0:
+                        st.subheader("🎯 Statements with Marketing Tactics")
+                       
+                        # Display with highlighting
+                        for idx, row in detected_df.iterrows():
+                            with st.expander(f"Row {idx + 1}: {row[statement_column][:100]}..."):
+                                st.write(f"**Full Statement:** {row[statement_column]}")
+                               
+                                tactics = []
+                                if row['urgency_detected']:
+                                    tactics.append("🚨 Urgency")
+                                if row['exclusive_detected']:
+                                    tactics.append("⭐ Exclusive")
+                               
+                                st.write(f"**Tactics Detected:** {', '.join(tactics)}")
+                                st.write(f"**Matched Terms:** {row['matched_terms']}")
+                    else:
+                        st.info("No marketing tactics detected in the uploaded data.")
+                   
+                    # Full results table
+                    st.subheader("📋 Complete Results")
+                    st.dataframe(result_df, use_container_width=True)
+                   
+                    # Download button
+                    csv_buffer = io.StringIO()
+                    result_df.to_csv(csv_buffer, index=False)
+                    csv_data = csv_buffer.getvalue()
+                   
+                    st.download_button(
+                        label="📥 Download Results as CSV",
+                        data=csv_data,
+                        file_name="marketing_tactics_analysis.csv",
+                        mime="text/csv"
+                    )
+   
+    with col2:
+        st.header("ℹ️ Current Dictionary")
+       
+        st.subheader("🚨 Urgency Terms")
+        st.write(f"**{len(st.session_state.dictionaries['urgency_marketing'])} terms:**")
+        for term in sorted(st.session_state.dictionaries['urgency_marketing']):
+            st.write(f"• {term}")
+       
+        st.subheader("⭐ Exclusive Terms")
+        st.write(f"**{len(st.session_state.dictionaries['exclusive_marketing'])} terms:**")
+        for term in sorted(st.session_state.dictionaries['exclusive_marketing']):
+            st.write(f"• {term}")
+       
+        st.markdown("---")
+        st.markdown("**💡 Tips:**")
+        st.markdown("- Edit terms in the sidebar")
+        st.markdown("- One term per line")
+        st.markdown("- Terms are case-insensitive")
+        st.markdown("- Click 'Reset to Defaults' to restore original terms")
+
+if __name__ == "__main__":
+    main()
