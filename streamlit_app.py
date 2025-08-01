@@ -1,117 +1,223 @@
 import streamlit as st
 import pandas as pd
-import nltk
-import re, json, io
-import emoji
-from packaging import version
+import io
 
-# Ensure NLTK sentence tokenizer resources are available
-nltk.download("punkt", quiet=True)
-if version.parse(nltk.__version__) >= version.parse("3.9"):
-    nltk.download("punkt_tab", quiet=True)
-
-st.set_page_config(page_title="IG Caption Transformer", page_icon="📄", layout="centered")
-
-st.title("📄 Instagram Caption Transformer")
-st.markdown(
-    """
-    Upload an Instagram posts CSV, tweak the **column‑rename mapping** in the sidebar if needed, 
-    and download a sentence‑level, emoji‑stripped CSV – perfect for further NLP!
-    """
+# Set page config
+st.set_page_config(
+    page_title="Marketing Tactic Detector",
+    page_icon="🎯",
+    layout="wide"
 )
 
-# ---------------------------- Sidebar: configuration ---------------------------------
-st.sidebar.header("🔧 Configuration")
+# Default dictionaries
+DEFAULT_DICTIONARIES = {
+    'urgency_marketing': {
+        'limited', 'limited time', 'limited run', 'limited edition', 'order now',
+        'last chance', 'hurry', 'while supplies last', 'before they\'re gone',
+        'selling out', 'selling fast', 'act now', 'don\'t wait', 'today only',
+        'expires soon', 'final hours', 'almost gone'
+    },
+    'exclusive_marketing': {
+        'exclusive', 'exclusively', 'exclusive offer', 'exclusive deal',
+        'members only', 'vip', 'special access', 'invitation only',
+        'premium', 'privileged', 'limited access', 'select customers',
+        'insider', 'private sale', 'early access'
+    }
+}
 
-default_mapping = {"shortcode": "ID", "caption": "Context"}
+def detect_tactics(text, dictionaries):
+    """Detect marketing tactics in text and return results."""
+    if pd.isna(text) or not isinstance(text, str):
+        return {'urgency_marketing': 0, 'exclusive_marketing': 0, 'matched_terms': []}
+   
+    text_lower = text.lower()
+    results = {'urgency_marketing': 0, 'exclusive_marketing': 0, 'matched_terms': []}
+   
+    for tactic, terms in dictionaries.items():
+        for term in terms:
+            if term in text_lower:
+                results[tactic] = 1
+                results['matched_terms'].append(term)
+   
+    return results
 
-mapping_json = st.sidebar.text_area(
-    "Column‑rename mapping (JSON)",
-    value=json.dumps(default_mapping, indent=2),
-    height=120,
-    help="Keys are current column names ➡️ values are the desired names. 'ID' & 'Context' must exist after renaming."
-)
-
-try:
-    rename_mapping = json.loads(mapping_json or "{}")
-    if not isinstance(rename_mapping, dict):
-        raise ValueError
-except (json.JSONDecodeError, ValueError):
-    st.sidebar.error("⚠️ Invalid JSON – using the default mapping.")
-    rename_mapping = default_mapping
-
-remove_emoji = st.sidebar.checkbox("Remove all emoji", value=True)
-
-# ---------------------------- Core logic ----------------------------------------------
-
-def clean_sentence(txt: str, strip_emoji: bool = True) -> str:
-    """Normalise whitespace, optionally strip emoji, and ensure terminal punctuation."""
-    txt = txt.replace("’", "'")
-    if strip_emoji:
-        txt = emoji.replace_emoji(txt, replace="")
-    txt = re.sub(r"\s+", " ", txt).strip()
-    if txt and txt[-1] not in ".!?":
-        txt += "."
-    return txt
-
-uploaded_file = st.file_uploader("📤 Upload CSV file", type=["csv"])  # main input
-
-if uploaded_file is not None:
+def load_csv_file(uploaded_file):
+    """Load CSV file with robust parsing."""
     try:
-        raw_df = pd.read_csv(uploaded_file)
+        # Try comma separator first
+        df = pd.read_csv(uploaded_file)
+        uploaded_file.seek(0)  # Reset file pointer
+       
+        # Check if semicolon-separated
+        if len(df.columns) == 1 and ';' in df.columns[0]:
+            df = pd.read_csv(uploaded_file, sep=';')
+           
     except Exception as e:
-        st.error(f"❌ Could not read CSV: {e}")
-        st.stop()
+        st.error(f"Error reading CSV file: {e}")
+        return None
+   
+    return df
 
-    # Apply rename mapping
-    raw_df = raw_df.rename(columns=rename_mapping)
+def process_data(df, statement_column, dictionaries):
+    """Process dataframe and add marketing tactic detection."""
+    # Apply detection to Statement column
+    detections = df[statement_column].apply(lambda x: detect_tactics(x, dictionaries))
+   
+    # Extract results into separate columns
+    df_result = df.copy()
+    df_result['urgency_detected'] = [d['urgency_marketing'] for d in detections]
+    df_result['exclusive_detected'] = [d['exclusive_marketing'] for d in detections]
+    df_result['matched_terms'] = [', '.join(d['matched_terms']) for d in detections]
+   
+    return df_result
 
-    required_cols = {"ID", "Context"}
-    if not required_cols.issubset(raw_df.columns):
-        missing = required_cols - set(raw_df.columns)
-        st.error(f"❌ Columns missing after renaming: {', '.join(missing)}")
-        st.stop()
-
-    # Explode captions → sentences
-    records = []
-    for _, row in raw_df.iterrows():
-        for idx, sent in enumerate(nltk.sent_tokenize(str(row["Context"])), 1):
-            records.append(
-                {
-                    "ID": row["ID"],
-                    "Sentence ID": idx,
-                    "Context": row["Context"],
-                    "Statement": clean_sentence(sent, strip_emoji=remove_emoji),
-                }
-            )
-
-    out_df = pd.DataFrame(records)
-
-    st.subheader("👀 Preview (first 10 rows)")
-    st.dataframe(out_df.head(10), use_container_width=True)
-
-    # Download button
-    csv_bytes = out_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "💾 Download transformed CSV",
-        data=csv_bytes,
-        file_name="ig_posts_transformed.csv",
-        mime="text/csv",
+def main():
+    st.title("🎯 Marketing Tactic Detector")
+    st.markdown("Upload your dataset and detect urgency and exclusive marketing tactics in text data.")
+   
+    # Sidebar for dictionary editing
+    st.sidebar.header("📝 Edit Dictionaries")
+   
+    # Initialize session state for dictionaries
+    if 'dictionaries' not in st.session_state:
+        st.session_state.dictionaries = DEFAULT_DICTIONARIES.copy()
+   
+    # Dictionary editing interface
+    st.sidebar.subheader("Urgency Marketing Terms")
+    urgency_text = st.sidebar.text_area(
+        "Enter terms (one per line):",
+        value='\n'.join(st.session_state.dictionaries['urgency_marketing']),
+        height=150,
+        key="urgency_terms"
     )
-
-    st.success("✅ Transformation complete!")
-else:
-    st.info("⬆️ Upload a CSV to begin.")
-
-# ---------------------------------------------------------------------------------------
-with st.sidebar.expander("ℹ️ About this app", expanded=False):
-    st.markdown(
-        """
-        * Converts IG post captions into sentence‑level rows.
-        * Strips emoji (optional) and ensures each sentence ends with punctuation.
-        * Built with **Streamlit** – feel free to fork & extend! 🛠️
-        """
+   
+    st.sidebar.subheader("Exclusive Marketing Terms")
+    exclusive_text = st.sidebar.text_area(
+        "Enter terms (one per line):",
+        value='\n'.join(st.session_state.dictionaries['exclusive_marketing']),
+        height=150,
+        key="exclusive_terms"
     )
+   
+    # Update dictionaries when text changes
+    st.session_state.dictionaries['urgency_marketing'] = set(
+        term.strip().lower() for term in urgency_text.split('\n') if term.strip()
+    )
+    st.session_state.dictionaries['exclusive_marketing'] = set(
+        term.strip().lower() for term in exclusive_text.split('\n') if term.strip()
+    )
+   
+    # Reset to defaults button
+    if st.sidebar.button("Reset to Defaults"):
+        st.session_state.dictionaries = DEFAULT_DICTIONARIES.copy()
+        st.rerun()
+   
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+   
+    with col1:
+        st.header("📁 Upload Dataset")
+        uploaded_file = st.file_uploader(
+            "Choose a CSV file",
+            type="csv",
+            help="Upload a CSV file containing text data to analyze"
+        )
+       
+        if uploaded_file is not None:
+            # Load and display the data
+            df = load_csv_file(uploaded_file)
+           
+            if df is not None:
+                st.success(f"✅ File loaded successfully! Shape: {df.shape}")
+               
+                # Column selection
+                st.subheader("📋 Data Preview")
+                st.dataframe(df.head(), use_container_width=True)
+               
+                # Select statement column
+                statement_column = st.selectbox(
+                    "Select the column containing text to analyze:",
+                    options=df.columns.tolist(),
+                    index=df.columns.tolist().index('Statement') if 'Statement' in df.columns else 0
+                )
+               
+                # Process button
+                if st.button("🔍 Analyze Marketing Tactics", type="primary"):
+                    with st.spinner("Processing data..."):
+                        result_df = process_data(df, statement_column, st.session_state.dictionaries)
+                   
+                    # Display results
+                    st.subheader("📊 Analysis Results")
+                   
+                    # Summary metrics
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.metric("Total Statements", len(result_df))
+                    with col_b:
+                        st.metric("Urgency Tactics Detected", result_df['urgency_detected'].sum())
+                    with col_c:
+                        st.metric("Exclusive Tactics Detected", result_df['exclusive_detected'].sum())
+                   
+                    # Show detected tactics
+                    detected_df = result_df[
+                        (result_df['urgency_detected'] == 1) |
+                        (result_df['exclusive_detected'] == 1)
+                    ]
+                   
+                    if len(detected_df) > 0:
+                        st.subheader("🎯 Statements with Marketing Tactics")
+                       
+                        # Display with highlighting
+                        for idx, row in detected_df.iterrows():
+                            with st.expander(f"Row {idx + 1}: {row[statement_column][:100]}..."):
+                                st.write(f"**Full Statement:** {row[statement_column]}")
+                               
+                                tactics = []
+                                if row['urgency_detected']:
+                                    tactics.append("🚨 Urgency")
+                                if row['exclusive_detected']:
+                                    tactics.append("⭐ Exclusive")
+                               
+                                st.write(f"**Tactics Detected:** {', '.join(tactics)}")
+                                st.write(f"**Matched Terms:** {row['matched_terms']}")
+                    else:
+                        st.info("No marketing tactics detected in the uploaded data.")
+                   
+                    # Full results table
+                    st.subheader("📋 Complete Results")
+                    st.dataframe(result_df, use_container_width=True)
+                   
+                    # Download button
+                    csv_buffer = io.StringIO()
+                    result_df.to_csv(csv_buffer, index=False)
+                    csv_data = csv_buffer.getvalue()
+                   
+                    st.download_button(
+                        label="📥 Download Results as CSV",
+                        data=csv_data,
+                        file_name="marketing_tactics_analysis.csv",
+                        mime="text/csv"
+                    )
+   
+    with col2:
+        st.header("ℹ️ Current Dictionary")
+       
+        st.subheader("🚨 Urgency Terms")
+        st.write(f"**{len(st.session_state.dictionaries['urgency_marketing'])} terms:**")
+        for term in sorted(st.session_state.dictionaries['urgency_marketing']):
+            st.write(f"• {term}")
+       
+        st.subheader("⭐ Exclusive Terms")
+        st.write(f"**{len(st.session_state.dictionaries['exclusive_marketing'])} terms:**")
+        for term in sorted(st.session_state.dictionaries['exclusive_marketing']):
+            st.write(f"• {term}")
+       
+        st.markdown("---")
+        st.markdown("**💡 Tips:**")
+        st.markdown("- Edit terms in the sidebar")
+        st.markdown("- One term per line")
+        st.markdown("- Terms are case-insensitive")
+        st.markdown("- Click 'Reset to Defaults' to restore original terms")
 
-st.sidebar.markdown("---")
-st.sidebar.caption("Made with ❤️ by Streamlit App Creator")
+if __name__ == "__main__":
+    main()
